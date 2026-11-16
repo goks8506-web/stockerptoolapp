@@ -37,6 +37,7 @@ export default function GodownReport() {
       'Total Quantity': item.total_quantity,
       'Last Stock In': item.date_added ? new Date(item.date_added).toLocaleDateString() : '—'
     })));
+    if (ws['!ref']) ws['!autofilter'] = { ref: ws['!ref'] };
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Godown Stock Report');
     XLSX.writeFile(wb, `Godown_Stock_Report_${new Date().toISOString().split('T')[0]}.xlsx`);

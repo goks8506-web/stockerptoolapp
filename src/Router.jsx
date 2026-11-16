@@ -37,7 +37,6 @@ import PurchaseReport from './Admin/Reports/PurchaseReport';
 import TransferLog from './Admin/Reports/TransferLog';
 import SupplierOutstanding from './Admin/Reports/SupplierOutstanding';
 import DealerAbstract from './Admin/Reports/DealerAbstract';
-import AiBotPage from './Admin/AiBot/AiBotPage';
 
 const AllRoutes = () => {
   return (
@@ -54,7 +53,6 @@ const AllRoutes = () => {
         <Route path="/view-stocks/:godownId" element={<GodownDetail />} />
         <Route path="/search" element={<Search />} />
         <Route path="/delivery" element={<Delivery />} />
-        <Route path="/ai-assistant" element={<AiBotPage />} />
       </Route>
 
       {/* Admin only */}

@@ -398,6 +398,7 @@ export default function GodownDetail() {
 
     if (currentStockData.length > 0) {
       const wsCurrent = XLSX.utils.json_to_sheet(currentStockData);
+      if (wsCurrent['!ref']) wsCurrent['!autofilter'] = { ref: wsCurrent['!ref'] };
       XLSX.utils.book_append_sheet(wb, wsCurrent, 'Current Stock');
     }
 
@@ -439,6 +440,7 @@ export default function GodownDetail() {
     for (const type in historyByType) {
       if (historyByType[type].length > 0) {
         const ws = XLSX.utils.json_to_sheet(historyByType[type]);
+        if (ws['!ref']) ws['!autofilter'] = { ref: ws['!ref'] };
         const safeName = type.length > 31 ? type.substring(0, 31) : type;
         XLSX.utils.book_append_sheet(wb, ws, safeName);
       }
@@ -699,7 +701,7 @@ export default function GodownDetail() {
           <div className="bg-slate-900/80 backdrop-blur-md rounded-2xl border border-slate-800 p-5 shadow-lg flex justify-between items-center">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Total Distinct Products</p>
-              <p className="text-2xl font-black text-white mt-1">{uniqueProducts.length} <span className="text-xs font-normal text-slate-400">SKUs</span></p>
+              <p className="text-2xl font-black text-white mt-1">{uniqueProducts.length} <span className="text-xs font-normal text-slate-400">Items</span></p>
             </div>
             <button
               onClick={() => setShowUniqueProductsModal(true)}

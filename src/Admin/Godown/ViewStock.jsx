@@ -5,7 +5,8 @@ import Logout from '../Logout';
 import { API_BASE_URL } from '../../../Config';
 import { 
   FaWarehouse, FaEye, FaEdit, FaTrash, FaSpinner, FaSearch, 
-  FaBox, FaPlus, FaTimes, FaCheck, FaBoxes
+  FaBox, FaPlus, FaTimes, FaCheck, FaBoxes, FaTruck, FaFilePdf,
+  FaCalendarAlt, FaChevronDown, FaChevronUp, FaExchangeAlt, FaArrowRight
 } from 'react-icons/fa';
 
 export default function ViewStock() {
@@ -31,6 +32,211 @@ export default function ViewStock() {
       .split(/[_\s]+/)
       .map(word => word.charAt(0).toUpperCase() + word.slice(1))
       .join(' ');
+  };
+
+  const formatCasesAndPcs = (cases, perCase = 1) => {
+    const pCase = Math.max(1, parseInt(perCase) || 1);
+    const totalPcs = Math.round(parseFloat(cases || 0) * pCase);
+    if (totalPcs <= 0) return '0cs';
+    const fullCases = Math.floor(totalPcs / pCase);
+    const loosePcs = totalPcs % pCase;
+    if (fullCases > 0 && loosePcs > 0) return `${fullCases}cs ${loosePcs}pcs`;
+    if (fullCases > 0) return `${fullCases}cs`;
+    return `${loosePcs}pcs`;
+  };
+
+  // ─── Multi-Product Transfer State ─────────────────────────────────────
+  const [transferModalOpen, setTransferModalOpen] = useState(false);
+  const [availableStocks, setAvailableStocks] = useState([]);
+  const [loadingAvailable, setLoadingAvailable] = useState(false);
+  const [stockSearchQuery, setStockSearchQuery] = useState('');
+  const [selectedTransferItems, setSelectedTransferItems] = useState([]);
+  const [transferring, setTransferring] = useState(false);
+  const [transferError, setTransferError] = useState('');
+  const [transferSuccessChallans, setTransferSuccessChallans] = useState(null);
+  const [showTransportDetails, setShowTransportDetails] = useState(false);
+  const [transportName, setTransportName] = useState('');
+  const [lrNumber, setLrNumber] = useState('');
+  const [deliveryPerson, setDeliveryPerson] = useState('');
+  const [transferDate, setTransferDate] = useState('');
+
+  const fetchAvailableStocks = async () => {
+    setLoadingAvailable(true);
+    setTransferError('');
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/stock/available-to-transfer`);
+      if (!res.ok) throw new Error('Failed to fetch available stocks');
+      const data = await res.json();
+      setAvailableStocks(data || []);
+    } catch (err) {
+      console.error(err);
+      setTransferError('Could not load available stocks');
+    } finally {
+      setLoadingAvailable(false);
+    }
+  };
+
+  const openMultiTransferModal = () => {
+    setTransferModalOpen(true);
+    setStockSearchQuery('');
+    setSelectedTransferItems([]);
+    setTransferError('');
+    setTransferSuccessChallans(null);
+    setShowTransportDetails(false);
+    setTransportName('');
+    setLrNumber('');
+    setDeliveryPerson('');
+    setTransferDate(new Date().toISOString().split('T')[0]);
+    fetchAvailableStocks();
+  };
+
+  const handleAddStockToTransfer = (stock) => {
+    const validTargets = godowns.filter(g => g.id !== stock.godown_id);
+    const alreadyChosenTargets = new Set(
+      selectedTransferItems
+        .filter(i => i.stock_id === stock.stock_id)
+        .map(i => parseInt(i.target_godown_id))
+    );
+    const firstUnused = validTargets.find(g => !alreadyChosenTargets.has(g.id));
+    const defaultTarget = firstUnused ? firstUnused.id : (validTargets.length > 0 ? validTargets[0].id : '');
+
+    const newRowId = `${stock.stock_id}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+
+    setSelectedTransferItems(prev => [
+      ...prev,
+      {
+        row_id: newRowId,
+        stock_id: stock.stock_id,
+        productname: stock.productname,
+        brand: stock.brand,
+        product_type: stock.product_type,
+        godown_id: stock.godown_id,
+        godown_name: stock.godown_name,
+        per_case: stock.per_case || 1,
+        total_pieces: stock.total_pieces,
+        current_cases: stock.current_cases,
+        full_cases: stock.full_cases,
+        loose_pieces_avail: stock.loose_pieces,
+        target_godown_id: defaultTarget,
+        cases_to_transfer: '',
+        loose_to_transfer: ''
+      }
+    ]);
+  };
+
+  const handleRemoveTransferItem = (row_id) => {
+    setSelectedTransferItems(prev => prev.filter(item => item.row_id !== row_id));
+  };
+
+  const handleUpdateTransferItem = (row_id, field, value) => {
+    setSelectedTransferItems(prev => prev.map(item => {
+      if (item.row_id === row_id) {
+        return { ...item, [field]: value };
+      }
+      return item;
+    }));
+  };
+
+  const getProductTotalAllocatedPcs = (stock_id) => {
+    return selectedTransferItems
+      .filter(i => i.stock_id === stock_id)
+      .reduce((sum, i) => {
+        const p = Math.max(1, parseInt(i.per_case) || 1);
+        const c = parseFloat(i.cases_to_transfer) || 0;
+        const l = parseFloat(i.loose_to_transfer) || 0;
+        return sum + Math.round((c * p) + l);
+      }, 0);
+  };
+
+  const filteredAvailableStocks = useMemo(() => {
+    const q = stockSearchQuery.toLowerCase().trim();
+    if (!q) return availableStocks.slice(0, 15);
+    return availableStocks.filter(s =>
+      (s.productname || '').toLowerCase().includes(q) ||
+      (s.brand || '').toLowerCase().includes(q) ||
+      (s.godown_name || '').toLowerCase().includes(q) ||
+      (s.product_type || '').toLowerCase().includes(q)
+    ).slice(0, 30);
+  }, [availableStocks, stockSearchQuery]);
+
+  const handleExecuteMultiTransfer = async () => {
+    setTransferError('');
+    if (selectedTransferItems.length === 0) {
+      setTransferError('Please select at least one product to transfer.');
+      return;
+    }
+
+    const seenRoutes = new Set();
+    const productAllocatedPcs = {};
+
+    for (const item of selectedTransferItems) {
+      if (!item.target_godown_id) {
+        setTransferError(`Please select a target godown for ${item.productname}.`);
+        return;
+      }
+      if (parseInt(item.target_godown_id) === parseInt(item.godown_id)) {
+        setTransferError(`Target godown cannot be the same as source godown for ${item.productname}.`);
+        return;
+      }
+
+      const routeKey = `${item.stock_id}_to_${item.target_godown_id}`;
+      if (seenRoutes.has(routeKey)) {
+        const targetG = godowns.find(g => g.id === parseInt(item.target_godown_id));
+        setTransferError(`Duplicate destination: Multiple rows for ${item.productname} sending to ${capitalize(targetG?.name || 'the same godown')}. Please combine the counts or choose a different destination.`);
+        return;
+      }
+      seenRoutes.add(routeKey);
+
+      const pCase = Math.max(1, parseInt(item.per_case) || 1);
+      const cVal = parseFloat(item.cases_to_transfer) || 0;
+      const lVal = parseFloat(item.loose_to_transfer) || 0;
+      const totalPcs = Math.round((cVal * pCase) + lVal);
+
+      if (totalPcs <= 0) {
+        setTransferError(`Please enter cases or pieces to transfer for ${item.productname}.`);
+        return;
+      }
+
+      productAllocatedPcs[item.stock_id] = (productAllocatedPcs[item.stock_id] || 0) + totalPcs;
+      if (productAllocatedPcs[item.stock_id] > item.total_pieces) {
+        setTransferError(`Total transfer quantity across destinations for ${item.productname} (${item.godown_name}) exceeds available stock (${formatCasesAndPcs(item.current_cases, pCase)}).`);
+        return;
+      }
+    }
+
+    const username = localStorage.getItem('username') || 'Unknown';
+    setTransferring(true);
+
+    try {
+      const payload = {
+        added_by: username,
+        transfer_date: transferDate || new Date().toISOString().split('T')[0],
+        transport_name: transportName.trim() || null,
+        lr_number: lrNumber.trim() || null,
+        delivery_person: deliveryPerson.trim() || null,
+        transfers: selectedTransferItems.map(item => ({
+          source_stock_id: item.stock_id,
+          target_godown_id: parseInt(item.target_godown_id),
+          cases: parseFloat(item.cases_to_transfer) || 0,
+          loose_pieces_transferred: parseFloat(item.loose_to_transfer) || 0
+        }))
+      };
+
+      const res = await fetch(`${API_BASE_URL}/api/stock/transfer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || 'Transfer failed');
+
+      setTransferSuccessChallans(data.challans || [{ id: data.challan_id, number: data.challan_number }]);
+      await fetchGodowns();
+    } catch (err) {
+      setTransferError(err.message || 'Failed to complete transfer');
+    } finally {
+      setTransferring(false);
+    }
   };
 
   const fetchGodowns = async () => {
@@ -174,12 +380,21 @@ export default function ViewStock() {
 
           <div className="flex items-center gap-3">
             {isAdmin && (
-              <button
-                onClick={() => navigate('/godown')}
-                className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white rounded-xl text-sm font-semibold shadow-lg shadow-amber-500/20 hover:scale-[1.02] active:scale-[0.98] transition-all"
-              >
-                <FaPlus className="text-xs" /> Inward Stock
-              </button>
+              <>
+                <button
+                  onClick={openMultiTransferModal}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-xl text-sm font-semibold shadow-lg shadow-indigo-500/25 hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer"
+                  title="Search stock and transfer multiple products between godowns"
+                >
+                  <FaTruck className="text-xs" /> Transfer Stock
+                </button>
+                <button
+                  onClick={() => navigate('/godown')}
+                  className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white rounded-xl text-sm font-semibold shadow-lg shadow-amber-500/20 hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer"
+                >
+                  <FaPlus className="text-xs" /> Inward Stock
+                </button>
+              </>
             )}
             <Logout />
           </div>
@@ -210,7 +425,7 @@ export default function ViewStock() {
             <div>
               <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Distinct Product Lines In Stock</p>
               <p className="text-3xl font-black text-white mt-1">
-                {totalDistinctProductsAll} <span className="text-sm font-normal text-slate-400">SKUs</span>
+                {totalDistinctProductsAll} <span className="text-sm font-normal text-slate-400">Items</span>
               </p>
             </div>
             <div className="p-3.5 rounded-2xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
@@ -308,7 +523,7 @@ export default function ViewStock() {
                           </span>
                         </div>
                         <div>
-                          <span className="text-[10px] font-medium text-slate-400 block uppercase tracking-wider">SKUs</span>
+                          <span className="text-[10px] font-medium text-slate-400 block uppercase tracking-wider">Items</span>
                           <span className="text-sm font-bold text-slate-200">
                             {g.distinct_products ?? g.stock_items ?? 0}
                           </span>
@@ -377,6 +592,432 @@ export default function ViewStock() {
                   Confirm
                 </button>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* Multi-Product Stock Transfer Modal */}
+        {transferModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-3 md:p-6 bg-slate-950/85 backdrop-blur-md overflow-y-auto">
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 md:p-7 max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl text-slate-100 my-auto">
+              
+              {/* Modal Header */}
+              <div className="flex items-center justify-between pb-4 border-b border-slate-800 mb-5">
+                <div className="flex items-center gap-3">
+                  <span className="p-2.5 rounded-2xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                    <FaTruck className="text-lg" />
+                  </span>
+                  <div>
+                    <h2 className="text-lg md:text-xl font-black text-white tracking-tight flex items-center gap-2">
+                      Multi-Product Stock Transfer
+                    </h2>
+                    <p className="text-xs text-slate-400">
+                      Search godown stock, pick multiple products, configure target destinations & transfer counts.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setTransferModalOpen(false)}
+                  className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+                >
+                  <FaTimes className="text-sm" />
+                </button>
+              </div>
+
+              {/* Success View */}
+              {transferSuccessChallans ? (
+                <div className="py-6 text-center space-y-4">
+                  <div className="w-16 h-16 rounded-3xl bg-emerald-500/15 text-emerald-400 flex items-center justify-center mx-auto border border-emerald-500/30 shadow-lg shadow-emerald-500/10">
+                    <FaCheck className="text-2xl" />
+                  </div>
+                  <h3 className="text-xl font-black text-white">Stock Transferred Successfully!</h3>
+                  <p className="text-xs text-slate-400 max-w-md mx-auto">
+                    All selected products were moved and transfer records have been committed to inventory and history.
+                  </p>
+
+                  <div className="max-w-lg mx-auto space-y-2.5 pt-2 text-left">
+                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Generated Delivery Challan(s):</h4>
+                    {transferSuccessChallans.map((ch, idx) => (
+                      <div key={idx} className="p-3.5 rounded-2xl bg-slate-950/70 border border-slate-800 flex items-center justify-between">
+                        <div>
+                          <p className="text-sm font-bold text-white flex items-center gap-1.5">
+                            <span className="text-indigo-400 font-mono">{ch.number}</span>
+                            <span className="text-xs text-slate-400">({ch.itemCount || 1} products)</span>
+                          </p>
+                          <p className="text-xs text-slate-400 flex items-center gap-1 mt-0.5">
+                            <span>{capitalize(ch.source)}</span>
+                            <FaArrowRight className="text-[10px] text-slate-500" />
+                            <span className="text-emerald-400 font-semibold">{capitalize(ch.target)}</span>
+                          </p>
+                        </div>
+                        {ch.id && (
+                          <a
+                            href={`${API_BASE_URL}/api/transfer-challans/${ch.id}/pdf`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-3.5 py-1.5 rounded-xl bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 hover:text-white border border-indigo-500/30 text-xs font-bold flex items-center gap-1.5 transition"
+                          >
+                            <FaFilePdf className="text-xs text-red-400" /> Print PDF
+                          </a>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="pt-4">
+                    <button
+                      onClick={() => {
+                        setTransferModalOpen(false);
+                        setTransferSuccessChallans(null);
+                      }}
+                      className="px-6 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex-1 overflow-y-auto space-y-5 pr-1">
+
+                  {/* Step 1: Search & Pick Available Stocks */}
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800">
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                        <FaSearch className="text-indigo-400 text-xs" /> Search Available Stocks In Godowns
+                      </label>
+                      <span className="text-[11px] text-slate-500">
+                        {loadingAvailable ? 'Loading stocks...' : `${availableStocks.length} active stocks`}
+                      </span>
+                    </div>
+
+                    <div className="relative">
+                      <FaSearch className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs" />
+                      <input
+                        type="text"
+                        placeholder="Search by product name, brand, or godown name..."
+                        value={stockSearchQuery}
+                        onChange={e => setStockSearchQuery(e.target.value)}
+                        className="w-full pl-9 pr-8 py-2 bg-slate-900 border border-slate-700/80 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
+                      />
+                      {stockSearchQuery && (
+                        <button
+                          onClick={() => setStockSearchQuery('')}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-xs"
+                        >
+                          <FaTimes />
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Stock results quick picker list */}
+                    <div className="mt-3 max-h-44 overflow-y-auto space-y-1.5 divide-y divide-slate-800/40">
+                      {loadingAvailable ? (
+                        <div className="py-4 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+                          <FaSpinner className="animate-spin text-indigo-400" /> Loading available inventory...
+                        </div>
+                      ) : filteredAvailableStocks.length === 0 ? (
+                        <div className="py-3 text-center text-xs text-slate-500">
+                          No active stocks found matching "{stockSearchQuery}".
+                        </div>
+                      ) : (
+                        filteredAvailableStocks.map(stock => {
+                          const selectedCount = selectedTransferItems.filter(i => i.stock_id === stock.stock_id).length;
+                          return (
+                            <div
+                              key={stock.stock_id}
+                              className="pt-1.5 first:pt-0 flex items-center justify-between gap-3 text-xs hover:bg-slate-900/60 p-2 rounded-xl transition"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-bold text-white truncate">{stock.productname}</span>
+                                  <span className="text-[10px] px-2 py-0.5 rounded-md bg-slate-800 text-slate-300 border border-slate-700">
+                                    {capitalize(stock.brand || 'General')}
+                                  </span>
+                                  <span className="text-[10px] px-2 py-0.5 rounded-md bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
+                                    {capitalize(stock.godown_name)}
+                                  </span>
+                                </div>
+                                <p className="text-[11px] text-slate-400 mt-0.5">
+                                  Available: <strong className="text-emerald-400">{formatCasesAndPcs(stock.current_cases, stock.per_case)}</strong> ({stock.total_pieces} pcs) · <span className="text-slate-500">{stock.per_case} pcs/cs</span>
+                                </p>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => handleAddStockToTransfer(stock)}
+                                className="px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer bg-indigo-600 hover:bg-indigo-500 text-white shadow-md shadow-indigo-600/20 active:scale-95"
+                                title="Add to transfer list (can add multiple times for different destinations)"
+                              >
+                                <FaPlus className="text-[10px]" /> Add
+                                {selectedCount > 0 && (
+                                  <span className="ml-1 px-1.5 py-0.5 rounded-full bg-indigo-900/90 text-[10px] text-indigo-200 border border-indigo-400/30">
+                                    {selectedCount} queued
+                                  </span>
+                                )}
+                              </button>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Step 2: Selected Transfer Products Configuration */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                        <FaExchangeAlt className="text-amber-400 text-xs" /> Selected Products to Transfer ({selectedTransferItems.length})
+                      </h3>
+                      {selectedTransferItems.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedTransferItems([])}
+                          className="text-[11px] text-rose-400 hover:text-rose-300 font-semibold"
+                        >
+                          Clear All
+                        </button>
+                      )}
+                    </div>
+
+                    {selectedTransferItems.length === 0 ? (
+                      <div className="p-8 rounded-2xl border border-dashed border-slate-800 bg-slate-950/30 text-center">
+                        <FaBoxes className="text-3xl text-slate-600 mx-auto mb-2" />
+                        <p className="text-xs text-slate-400 font-medium">No products selected yet.</p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">Use the search box above and click "+ Add" to queue products for transfer.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {selectedTransferItems.map((item, idx) => {
+                          const pCase = Math.max(1, parseInt(item.per_case) || 1);
+                          const cVal = parseFloat(item.cases_to_transfer) || 0;
+                          const lVal = parseFloat(item.loose_to_transfer) || 0;
+                          const itemTotalPcs = Math.round((cVal * pCase) + lVal);
+                          const totalAllocated = getProductTotalAllocatedPcs(item.stock_id);
+                          const isExceeded = totalAllocated > item.total_pieces;
+                          const remainingPcs = item.total_pieces - totalAllocated;
+                          const validTargets = godowns.filter(g => g.id !== item.godown_id);
+
+                          return (
+                            <div
+                              key={item.row_id}
+                              className={`p-3.5 rounded-2xl border transition-all ${
+                                isExceeded
+                                  ? 'bg-rose-950/20 border-rose-500/40'
+                                  : 'bg-slate-950/80 border-slate-800 hover:border-slate-700'
+                              }`}
+                            >
+                              <div className="flex items-start justify-between gap-2 mb-2.5">
+                                <div>
+                                  <span className="font-bold text-white text-sm">
+                                    {idx + 1}. {item.productname}
+                                  </span>
+                                  <span className="text-xs text-slate-400 ml-2">
+                                    ({capitalize(item.brand || 'General')})
+                                  </span>
+                                  <div className="flex items-center gap-2 mt-1">
+                                    <span className="text-[10px] px-2 py-0.5 rounded-md bg-slate-800 text-slate-300 font-medium">
+                                      Source: <strong className="text-indigo-400">{capitalize(item.godown_name)}</strong>
+                                    </span>
+                                    <span className="text-[10px] text-slate-400">
+                                      Available: <strong className="text-emerald-400">{formatCasesAndPcs(item.current_cases, pCase)}</strong> ({item.total_pieces} pcs)
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleAddStockToTransfer(item)}
+                                    className="px-2.5 py-1 rounded-xl bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 text-[11px] font-semibold border border-indigo-500/20 transition flex items-center gap-1 cursor-pointer"
+                                    title="Send more of this product to another godown"
+                                  >
+                                    <FaPlus className="text-[9px]" /> Split Target
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveTransferItem(item.row_id)}
+                                    className="p-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-xs transition cursor-pointer"
+                                    title="Remove row"
+                                  >
+                                    <FaTrash className="text-xs" />
+                                  </button>
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-slate-800/60">
+                                {/* Target Godown */}
+                                <div>
+                                  <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
+                                    Target Godown *
+                                  </label>
+                                  <select
+                                    value={item.target_godown_id}
+                                    onChange={e => handleUpdateTransferItem(item.row_id, 'target_godown_id', e.target.value)}
+                                    className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white focus:outline-none focus:border-indigo-500"
+                                  >
+                                    <option value="" disabled>Select target godown...</option>
+                                    {validTargets.map(g => (
+                                      <option key={g.id} value={g.id}>
+                                        {capitalize(g.name)}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+
+                                {/* Cases */}
+                                <div>
+                                  <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
+                                    Cases to Transfer
+                                  </label>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    placeholder="e.g. 5"
+                                    value={item.cases_to_transfer}
+                                    onChange={e => handleUpdateTransferItem(item.row_id, 'cases_to_transfer', e.target.value)}
+                                    className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                                  />
+                                </div>
+
+                                {/* Loose Pcs */}
+                                <div>
+                                  <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
+                                    Loose Pcs (Optional)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    placeholder="e.g. 10"
+                                    value={item.loose_to_transfer}
+                                    onChange={e => handleUpdateTransferItem(item.row_id, 'loose_to_transfer', e.target.value)}
+                                    className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                                  />
+                                </div>
+                              </div>
+
+                              {/* Quantity indicator preview */}
+                              {(parseFloat(item.cases_to_transfer) > 0 || parseFloat(item.loose_to_transfer) > 0) && (
+                                <div className="mt-2 text-xs flex flex-wrap items-center justify-between gap-1 pt-1">
+                                  <span className={`font-semibold ${isExceeded ? 'text-rose-400' : 'text-indigo-300'}`}>
+                                    This route: {itemTotalPcs} pcs ({formatCasesAndPcs(itemTotalPcs / pCase, pCase)})
+                                  </span>
+                                  {isExceeded ? (
+                                    <span className="text-rose-400 font-bold text-[11px]">
+                                      ⚠️ Total across transfers ({totalAllocated} pcs) exceeds available ({item.total_pieces} pcs)!
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-400 text-[11px]">
+                                      Total remaining in {capitalize(item.godown_name)}: {formatCasesAndPcs(remainingPcs / pCase, pCase)}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Step 3: Transport & Delivery Details - Collapsible */}
+                  <div className="border border-slate-800 rounded-2xl overflow-hidden bg-slate-950/40">
+                    <button
+                      type="button"
+                      onClick={() => setShowTransportDetails(prev => !prev)}
+                      className="w-full flex items-center justify-between p-3.5 text-xs font-bold text-slate-300 hover:bg-slate-900/60 transition"
+                    >
+                      <span className="flex items-center gap-2">
+                        <FaTruck className="text-indigo-400" /> Transport & Delivery Details (Optional Challan Info)
+                      </span>
+                      <span className="text-[11px] text-slate-500 flex items-center gap-1 font-normal">
+                        {showTransportDetails ? <FaChevronUp /> : <FaChevronDown />}
+                      </span>
+                    </button>
+
+                    {showTransportDetails && (
+                      <div className="p-4 pt-1 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 border-t border-slate-800/80">
+                        <div>
+                          <label className="block text-[10px] font-semibold uppercase text-slate-400 mb-1">Transport / Vehicle</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. TN-67-AB-1234"
+                            value={transportName}
+                            onChange={e => setTransportName(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-semibold uppercase text-slate-400 mb-1">LR / Receipt No</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. LR-98765"
+                            value={lrNumber}
+                            onChange={e => setLrNumber(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-semibold uppercase text-slate-400 mb-1">Delivery Person</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. Ramesh"
+                            value={deliveryPerson}
+                            onChange={e => setDeliveryPerson(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-semibold uppercase text-slate-400 mb-1">Transfer Date</label>
+                          <input
+                            type="date"
+                            value={transferDate}
+                            onChange={e => setTransferDate(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {transferError && (
+                    <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-400 text-xs font-semibold">
+                      {transferError}
+                    </div>
+                  )}
+
+                </div>
+              )}
+
+              {/* Modal Footer */}
+              {!transferSuccessChallans && (
+                <div className="flex items-center justify-between gap-3 pt-4 border-t border-slate-800 mt-4">
+                  <button
+                    type="button"
+                    onClick={() => setTransferModalOpen(false)}
+                    className="px-5 py-2.5 rounded-xl border border-slate-800 text-slate-300 hover:bg-slate-800 text-xs font-bold transition"
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleExecuteMultiTransfer}
+                    disabled={transferring || selectedTransferItems.length === 0}
+                    className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-bold disabled:opacity-40 flex items-center gap-2 shadow-lg shadow-indigo-600/20 transition cursor-pointer"
+                  >
+                    {transferring ? (
+                      <>
+                        <FaSpinner className="animate-spin text-xs" /> Transferring...
+                      </>
+                    ) : (
+                      <>
+                        <FaTruck className="text-xs" /> Transfer {selectedTransferItems.length} {selectedTransferItems.length === 1 ? 'Item' : 'Items'} & Generate Challan(s)
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+
             </div>
           </div>
         )}

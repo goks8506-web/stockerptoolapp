@@ -40,6 +40,7 @@ export default function TransferLog() {
       'Delivery Person': item.delivery_person || '—',
       'Performed By': item.performed_by || '—'
     })));
+    if (ws['!ref']) ws['!autofilter'] = { ref: ws['!ref'] };
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Transfer Log');
     XLSX.writeFile(wb, `Transfer_Log_Report_${new Date().toISOString().split('T')[0]}.xlsx`);
